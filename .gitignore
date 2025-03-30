@@ -40,6 +40,5 @@ chromedriver.exe
 # Environment variables
 .env
 
-# Any large data files that shouldn't be in git (optional)
-# Uncomment if you don't want to include scraped data in the repo
-# scraped_data/*.csv 
+# Large data files
+scraped_data/*.csv 
