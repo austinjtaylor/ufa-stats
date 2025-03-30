@@ -68,7 +68,7 @@ Data is available for seasons from 2012 to 2024 (excluding 2020), as well as car
 
 ## License
 
-[Add license information here]
+MIT License 
 
 ## Acknowledgements
 
