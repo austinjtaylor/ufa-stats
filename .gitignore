@@ -1,0 +1,45 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+env/
+ENV/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Logs
+logs/
+*.log
+
+# Debug output
+debug_output/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Chromedriver
+chromedriver
+chromedriver.exe
+
+# Environment variables
+.env
+
+# Any large data files that shouldn't be in git (optional)
+# Uncomment if you don't want to include scraped data in the repo
+# scraped_data/*.csv 
