@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import re
 import numpy as np
+import plotly.graph_objects as go
 
 
 def main():
@@ -61,6 +62,14 @@ def main():
                 df['Season'] = df['Season'].astype(str).str.replace(
                     r'\.0$', '', regex=True
                 )
+            
+            # Handle team name changes: AUS -> ATX from 2022 onwards
+            if 'Team' in df.columns and 'Season' in df.columns:
+                # Create a mask for rows where Team is AUS and Season is 2021 or before
+                season_numeric = pd.to_numeric(df['Season'], errors='coerce')
+                aus_mask = (df['Team'] == 'AUS') & (season_numeric <= 2021)
+                # Update team name for those rows
+                df.loc[aus_mask, 'Team'] = 'ATX'
             
             # Remove the Per column if it exists
             if 'Per' in df.columns:
@@ -184,6 +193,12 @@ def main():
     # Reset Filters button
     if st.sidebar.button("Reset All Filters"):
         st.session_state.clear()
+        # Ensure the season filter is reset to "Career" 
+        if "selected_season" in st.session_state:
+            st.session_state["selected_season"] = "Career"
+        # Ensure the per filter is reset to "Total"
+        if "selected_per" in st.session_state:
+            st.session_state["selected_per"] = "Total"
         st.rerun()
     
     # Season filter
@@ -195,11 +210,16 @@ def main():
         )
         
         default_idx = seasons.index("Career") if "Career" in seasons else 0
+        
+        # Initialize session state for season if it doesn't exist
+        if "selected_season" not in st.session_state:
+            st.session_state["selected_season"] = seasons[default_idx]
             
         selected_season = st.sidebar.selectbox(
             "Season",
             options=list(seasons),
-            index=default_idx
+            index=default_idx,
+            key="selected_season"
         )
         
         df_filtered = df[
@@ -291,10 +311,16 @@ def main():
     - Per 10 poss.: Stats per 10 possessions (POS)
     - Per 100 min.: Stats per 100 minutes played (uses MIN if available or G as fallback)
     """
+    
+    # Initialize session state for per if it doesn't exist
+    if "selected_per" not in st.session_state:
+        st.session_state["selected_per"] = "Total"
+        
     selected_per = st.sidebar.selectbox(
         "Per",
         options=per_options,
-        index=0,  # Default to "Total",
+        index=per_options.index(st.session_state["selected_per"]),  # Use session state value
+        key="selected_per",
         help=per_help
     )
     
@@ -699,7 +725,7 @@ def main():
             # Visualization type selector
             vis_type = st.selectbox(
                 "Visualization Type",
-                options=["Bar Chart", "Scatter Plot", "Histogram"]
+                options=["Bar Chart", "Scatter Plot", "Histogram", "Radar Chart", "Performance Quadrants"]
             )
             
             # Visualization options
@@ -742,7 +768,53 @@ def main():
                     
                     # Number of bins option
                     n_bins = st.slider("Number of bins", min_value=5, max_value=50, value=20)
-        
+                elif vis_type == "Radar Chart":
+                    # Allow selection of up to 5 players for comparison
+                    if player_col in df_filtered.columns:
+                        players_list = sorted(df_filtered[player_col].unique())
+                        selected_players = st.multiselect(
+                            "Select Players to Compare (max 5)", 
+                            options=players_list,
+                            max_selections=5
+                        )
+                        
+                        # Select metrics for radar chart (3-8)
+                        selected_metrics = st.multiselect(
+                            "Select Metrics for Comparison (3-8 recommended)",
+                            options=available_metrics,
+                            default=available_metrics[:min(5, len(available_metrics))]
+                        )
+                    else:
+                        st.warning("Player column needed for radar chart visualization.")
+                elif vis_type == "Performance Quadrants":
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        x_axis = st.selectbox(
+                            "X-Axis Metric",
+                            options=available_metrics,
+                            index=0 if available_metrics and len(available_metrics) > 0 else None
+                        )
+                        # Allow custom x-axis label for quadrant
+                        x_quadrant_label = st.text_input("X-Axis Quadrant Label", value="Higher →")
+                    
+                    with col2:
+                        y_axis = st.selectbox(
+                            "Y-Axis Metric",
+                            options=available_metrics,
+                            index=1 if len(available_metrics) > 1 else 0 if available_metrics else None
+                        )
+                        # Allow custom y-axis label for quadrant
+                        y_quadrant_label = st.text_input("Y-Axis Quadrant Label", value="Higher ↑")
+                    
+                    # Option to limit the number of players shown
+                    show_top_n = st.slider("Number of players to show", min_value=5, max_value=50, value=20)
+                    
+                    # Option to select a team color
+                    if team_col in df_filtered.columns:
+                        use_team_color = st.checkbox("Color by team", value=True)
+                    else:
+                        use_team_color = False
+            
             # Create visualizations
             if not df_filtered.empty:
                 if vis_type == "Bar Chart" and x_axis:
@@ -823,6 +895,219 @@ def main():
                     - The red dashed line shows the mean (average) value
                     - You can adjust the number of bins to change the histogram granularity
                     """)
+                
+                elif vis_type == "Radar Chart" and player_col in df_filtered.columns:
+                    if selected_players and selected_metrics and len(selected_metrics) >= 2:
+                        # Filter dataframe to include only selected players
+                        radar_df = df_filtered[df_filtered[player_col].isin(selected_players)]
+                        
+                        if not radar_df.empty:
+                            # Create a figure with a polar subplot
+                            fig = go.Figure()
+                            
+                            # Normalize data for better visualization (0-1 scale)
+                            for metric in selected_metrics:
+                                max_val = df_filtered[metric].max()
+                                min_val = df_filtered[metric].min()
+                                if max_val != min_val:  # Avoid division by zero
+                                    radar_df[f"{metric}_norm"] = (radar_df[metric] - min_val) / (max_val - min_val)
+                                else:
+                                    radar_df[f"{metric}_norm"] = 1  # If all values are the same
+                            
+                            # Add traces for each player
+                            for i, player in enumerate(selected_players):
+                                player_data = radar_df[radar_df[player_col] == player]
+                                if not player_data.empty:
+                                    # Create values list, adding the first value again at the end to close the polygon
+                                    values = [player_data[f"{metric}_norm"].iloc[0] for metric in selected_metrics]
+                                    values.append(values[0])
+                                    
+                                    # Create labels list, with the first label repeated at the end
+                                    theta = selected_metrics + [selected_metrics[0]]
+                                    
+                                    # Add trace
+                                    fig.add_trace(go.Scatterpolar(
+                                        r=values,
+                                        theta=theta,
+                                        fill='toself',
+                                        name=player,
+                                        line_color=qualitative_palette[i % len(qualitative_palette)]
+                                    ))
+                            
+                            # Update layout
+                            fig.update_layout(
+                                polar=dict(
+                                    radialaxis=dict(
+                                        visible=True,
+                                        range=[0, 1]
+                                    )
+                                ),
+                                title=f"Player Comparison" + (f" ({selected_per})" if selected_per != "Total" else ""),
+                                showlegend=True
+                            )
+                            
+                            st.plotly_chart(fig, use_container_width=True)
+                            
+                            # Add explanation
+                            st.markdown("""
+                            **Understanding the Radar Chart:**
+                            - Each axis represents a different metric (normalized to the same scale)
+                            - The further from the center, the higher the value
+                            - Different colors represent different players
+                            - This chart shows relative strengths across multiple metrics at once
+                            """)
+                            
+                            # Display actual values in a table
+                            with st.expander("View Raw Values", expanded=False):
+                                st.dataframe(
+                                    radar_df[([player_col] + selected_metrics)],
+                                    use_container_width=True
+                                )
+                        else:
+                            st.warning("No data available for selected players.")
+                    else:
+                        st.warning("Please select at least one player and two metrics for radar chart.")
+                elif vis_type == "Performance Quadrants":
+                    if x_axis and y_axis and player_col in df_filtered.columns:
+                        # Create a copy of the filtered dataframe with only the needed columns
+                        quad_df = df_filtered[[player_col, x_axis, y_axis]].copy()
+                        
+                        # Check if we have team column for coloring
+                        if team_col in df_filtered.columns and use_team_color:
+                            quad_df[team_col] = df_filtered[team_col]
+                        
+                        # Drop rows with missing values
+                        quad_df = quad_df.dropna(subset=[x_axis, y_axis])
+                        
+                        if not quad_df.empty:
+                            # Calculate median values for quadrant lines
+                            x_median = quad_df[x_axis].median()
+                            y_median = quad_df[y_axis].median()
+                            
+                            # Sort by combined rank of both metrics to get top performers
+                            quad_df['x_rank'] = quad_df[x_axis].rank(ascending=False)
+                            quad_df['y_rank'] = quad_df[y_axis].rank(ascending=False)
+                            quad_df['combined_rank'] = quad_df['x_rank'] + quad_df['y_rank']
+                            quad_df = quad_df.sort_values('combined_rank').head(show_top_n)
+                            
+                            # Create the scatter plot
+                            if team_col in quad_df.columns and use_team_color:
+                                fig = px.scatter(
+                                    quad_df, 
+                                    x=x_axis, 
+                                    y=y_axis,
+                                    color=team_col,
+                                    text=player_col,
+                                    title=f"Performance Quadrants: {x_axis} vs {y_axis}" + 
+                                          (f" ({selected_per})" if selected_per != "Total" else ""),
+                                    color_discrete_sequence=qualitative_palette,
+                                    height=700
+                                )
+                            else:
+                                fig = px.scatter(
+                                    quad_df, 
+                                    x=x_axis, 
+                                    y=y_axis,
+                                    text=player_col,
+                                    title=f"Performance Quadrants: {x_axis} vs {y_axis}" + 
+                                          (f" ({selected_per})" if selected_per != "Total" else ""),
+                                    color_discrete_sequence=[custom_palette[4]],
+                                    height=700
+                                )
+                            
+                            # Add quadrant lines
+                            fig.add_vline(x=x_median, line_width=1, line_dash="dash", line_color="white")
+                            fig.add_hline(y=y_median, line_width=1, line_dash="dash", line_color="white")
+                            
+                            # Add quadrant labels
+                            x_range = quad_df[x_axis].max() - quad_df[x_axis].min()
+                            y_range = quad_df[y_axis].max() - quad_df[y_axis].min()
+                            
+                            # Add quadrant annotations
+                            fig.add_annotation(
+                                x=x_median - (x_range * 0.25),
+                                y=y_median + (y_range * 0.25),
+                                text=f"Lower {x_axis}<br>Higher {y_axis}",
+                                showarrow=False,
+                                font=dict(color="rgba(255,255,255,0.5)")
+                            )
+                            fig.add_annotation(
+                                x=x_median + (x_range * 0.25),
+                                y=y_median + (y_range * 0.25),
+                                text=f"Higher {x_axis}<br>Higher {y_axis}",
+                                showarrow=False,
+                                font=dict(color="rgba(255,255,255,0.5)")
+                            )
+                            fig.add_annotation(
+                                x=x_median - (x_range * 0.25),
+                                y=y_median - (y_range * 0.25),
+                                text=f"Lower {x_axis}<br>Lower {y_axis}",
+                                showarrow=False,
+                                font=dict(color="rgba(255,255,255,0.5)")
+                            )
+                            fig.add_annotation(
+                                x=x_median + (x_range * 0.25),
+                                y=y_median - (y_range * 0.25),
+                                text=f"Higher {x_axis}<br>Lower {y_axis}",
+                                showarrow=False,
+                                font=dict(color="rgba(255,255,255,0.5)")
+                            )
+                            
+                            # Add custom axis descriptions
+                            fig.add_annotation(
+                                x=quad_df[x_axis].max(),
+                                y=y_median,
+                                text=x_quadrant_label,
+                                showarrow=False,
+                                font=dict(color="white")
+                            )
+                            fig.add_annotation(
+                                x=x_median,
+                                y=quad_df[y_axis].max(),
+                                text=y_quadrant_label,
+                                showarrow=False,
+                                font=dict(color="white")
+                            )
+                            
+                            # Configure hover text to show player names
+                            fig.update_traces(
+                                hoverinfo="text",
+                                hovertext=quad_df[player_col],
+                                marker=dict(size=12, opacity=0.8),
+                                textposition="top center"
+                            )
+                            
+                            # Update layout for better readability
+                            fig.update_layout(
+                                xaxis_title=x_axis,
+                                yaxis_title=y_axis,
+                                plot_bgcolor="rgba(0,0,0,0.1)",
+                                showlegend=True if (team_col in quad_df.columns and use_team_color) else False
+                            )
+                            
+                            st.plotly_chart(fig, use_container_width=True)
+                            
+                            # Add explanation
+                            st.markdown(f"""
+                            **Understanding the Performance Quadrants:**
+                            - The chart divides players into four quadrants based on {x_axis} and {y_axis}
+                            - Top-right: High in both metrics
+                            - Top-left: Lower {x_axis}, higher {y_axis}
+                            - Bottom-right: Higher {x_axis}, lower {y_axis}
+                            - Bottom-left: Lower in both metrics
+                            - Lines represent the median values
+                            """)
+                            
+                            # Display actual values in a table
+                            with st.expander("View Raw Values", expanded=False):
+                                st.dataframe(
+                                    quad_df[[player_col, x_axis, y_axis]],
+                                    use_container_width=True
+                                )
+                        else:
+                            st.warning("No data available with selected metrics.")
+                    else:
+                        st.warning("Please select two metrics for performance quadrants visualization.")
                 else:
                     st.warning("Please select dimensions for visualization.")
             else:
@@ -871,6 +1156,353 @@ def main():
         """, unsafe_allow_html=True)
     
     st.markdown("Dashboard created for UFA Player Statistics Analysis")
+
+    # --- PLAYER PROFILE CARDS ---
+    if player_col in df.columns and not df_filtered.empty:
+        st.header("Player Profile Cards")
+        
+        # Player selector
+        available_players = sorted(df_filtered[player_col].unique())
+        if available_players:
+            selected_player_profiles = st.multiselect(
+                "Select Players to View", 
+                options=available_players,
+                max_selections=4,  # Limit to 4 players for better layout
+                help="Select up to 4 players to view their profile cards"
+            )
+            
+            if selected_player_profiles:
+                # Create a grid layout - either 1 row of up to 4 cards, or a 2x2 grid
+                if len(selected_player_profiles) <= 2:
+                    player_cols = st.columns(len(selected_player_profiles))
+                else:
+                    player_cols = st.columns(2)  # 2 columns for 3-4 players
+                    player_cols_row2 = st.columns(2)  # Second row
+                
+                # Define key metrics to show on each card
+                key_metrics = []
+                # Add scoring metrics if available
+                if 'SCR' in df_filtered.columns:
+                    key_metrics.append('SCR')
+                if 'GLS' in df_filtered.columns:
+                    key_metrics.append('GLS')
+                if 'AST' in df_filtered.columns:
+                    key_metrics.append('AST')
+                # Add efficiency metrics
+                if 'OEFF' in df_filtered.columns:
+                    key_metrics.append('OEFF')
+                if 'Cmp%' in df_filtered.columns:
+                    key_metrics.append('Cmp%')
+                if 'Hck%' in df_filtered.columns:
+                    key_metrics.append('Hck%')
+                # Add volume metrics
+                if 'PP' in df_filtered.columns:
+                    key_metrics.append('PP')
+                if 'POS' in df_filtered.columns:
+                    key_metrics.append('POS')
+                if '+/-' in df_filtered.columns:
+                    key_metrics.append('+/-')
+                # If we have fewer than 6 metrics, add more
+                remaining_metrics = [col for col in numeric_cols if col not in key_metrics]
+                while len(key_metrics) < 6 and remaining_metrics:
+                    key_metrics.append(remaining_metrics.pop(0))
+                # Limit to 6 metrics for clean display
+                key_metrics = key_metrics[:6]
+                
+                # Display cards
+                for i, player in enumerate(selected_player_profiles):
+                    # Get the appropriate column based on position
+                    if len(selected_player_profiles) <= 2:
+                        col = player_cols[i]
+                    else:
+                        col = player_cols[i] if i < 2 else player_cols_row2[i-2]
+                    
+                    # Get player data
+                    player_data = df_filtered[df_filtered[player_col] == player]
+                    
+                    if not player_data.empty:
+                        # Create the player card
+                        with col:
+                            # Container with border
+                            st.markdown(f"""
+                            <div style="
+                                border: 1px solid #4F8BF9;
+                                border-radius: 10px;
+                                padding: 15px;
+                                margin-bottom: 20px;
+                                background-color: rgba(79, 139, 249, 0.1);
+                            ">
+                                <h3 style="text-align: center; border-bottom: 1px solid #4F8BF9; padding-bottom: 10px;">
+                                    {player}
+                                </h3>
+                            """, unsafe_allow_html=True)
+                            
+                            # Team info if available
+                            if team_col in player_data.columns:
+                                team = player_data[team_col].iloc[0]
+                                st.markdown(f"""
+                                <p style="text-align: center; margin-top: -10px; color: #8B9DC3;">
+                                    {team}
+                                </p>
+                                """, unsafe_allow_html=True)
+                            
+                            # Create two columns for the metrics
+                            metric_cols = st.columns(2)
+                            
+                            # Display metrics
+                            for j, metric in enumerate(key_metrics):
+                                # Check if metric exists in player data
+                                if metric in player_data.columns:
+                                    # Determine which column to use
+                                    metric_col = metric_cols[j % 2]
+                                    
+                                    # Get the value
+                                    value = player_data[metric].iloc[0]
+                                    
+                                    # Format the value based on type
+                                    if metric.endswith('%') or 'EFF' in metric.upper():
+                                        # Format as percentage or efficiency
+                                        value_str = f"{value:.1f}"
+                                    elif metric == '+/-':
+                                        # Format with sign
+                                        value_str = f"{value:+.1f}"
+                                    else:
+                                        # Regular number format
+                                        value_str = f"{value:.1f}"
+                                    
+                                    # Display the metric
+                                    with metric_col:
+                                        st.markdown(f"""
+                                        <div style="text-align: center; margin: 10px 0;">
+                                            <p style="font-size: 0.9em; margin-bottom: 0; color: #DDDDDD;">
+                                                {metric}
+                                            </p>
+                                            <p style="font-size: 1.2em; font-weight: bold; margin-top: 0;">
+                                                {value_str}
+                                            </p>
+                                        </div>
+                                        """, unsafe_allow_html=True)
+                            
+                            # Close the container div
+                            st.markdown("</div>", unsafe_allow_html=True)
+                            
+                            # Add a small chart below the card - top 3 metrics trend
+                            if selected_season == "Career" and season_col in df.columns:
+                                # Get player data across seasons for this player
+                                player_seasons = df[
+                                    (df[player_col] == player) & 
+                                    (df[season_col] != "Career")
+                                ].sort_values(by=season_col)
+                                
+                                if len(player_seasons) > 1 and len(key_metrics) > 0:
+                                    # Select top 3 metrics
+                                    trend_metrics = key_metrics[:3]
+                                    
+                                    # Create a line chart for trends
+                                    trend_data = pd.melt(
+                                        player_seasons[[season_col] + trend_metrics],
+                                        id_vars=[season_col],
+                                        value_vars=trend_metrics,
+                                        var_name='Metric',
+                                        value_name='Value'
+                                    )
+                                    
+                                    fig = px.line(
+                                        trend_data,
+                                        x=season_col,
+                                        y='Value',
+                                        color='Metric',
+                                        title=f"{player} - Trends",
+                                        color_discrete_sequence=qualitative_palette,
+                                        height=200
+                                    )
+                                    fig.update_layout(
+                                        margin=dict(l=10, r=10, t=30, b=10),
+                                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+                                        xaxis_title=None
+                                    )
+                                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Select one or more players to view their profile cards")
+
+    # --- TEAM COMPARISON ---
+    # This section has been commented out since it currently only sums individual player stats,
+    # which is not meaningful for team comparison. Team-specific stats would be needed for 
+    # a proper team comparison feature.
+    # 
+    # if team_col in df.columns and not df_filtered.empty and selected_season:
+    #     st.header("Team Comparison")
+    #     
+    #     # Check if we need to recalculate team aggregates
+    #     if selected_season == "Career":
+    #         # For Career, we need to aggregate data by team first
+    #         team_data = df[df[season_col] != "Career"].copy()
+    #     else:
+    #         # For specific season, filter by the season first
+    #         team_data = df[df[season_col] == selected_season].copy()
+    #     
+    #     # Only proceed if we have team data
+    #     if not team_data.empty:
+    #         # Aggregate statistics by team
+    #         numeric_cols_for_teams = [col for col in numeric_cols 
+    #                                   if col in team_data.columns and not col.endswith('%')]
+    #         
+    #         # Create a list of aggregate functions for each column
+    #         agg_dict = {}
+    #         for col in numeric_cols_for_teams:
+    #             if col in ['G', 'PP', 'POS']:  # These are counting stats that should be averaged
+    #                 agg_dict[col] = 'mean'
+    #             else:
+    #                 agg_dict[col] = 'sum'
+    #         
+    #         # Add player count
+    #         agg_dict[player_col] = 'count'
+    #         
+    #         # Aggregate data
+    #         team_stats = team_data.groupby(team_col).agg(agg_dict).reset_index()
+    #         team_stats = team_stats.rename(columns={player_col: 'Players'})
+    #         
+    #         # Calculate derived metrics
+    #         if 'SCR' in team_stats.columns and 'POS' in team_stats.columns:
+    #             team_stats['OEFF'] = (team_stats['SCR'] / team_stats['POS'] * 100).round(1)
+    #         
+    #         # Show only teams with minimum players
+    #         min_players = 5
+    #         team_stats = team_stats[team_stats['Players'] >= min_players]
+    #         
+    #         # Let user select metrics to compare
+    #         if not team_stats.empty:
+    #             # Visualization options
+    #             st.subheader("Visualize Team Comparison")
+    #             
+    #             # Select metrics to visualize
+    #             default_team_metrics = ['OEFF', 'SCR', '+/-'] if all(m in team_stats.columns for m in ['OEFF', 'SCR', '+/-']) else []
+    #             if not default_team_metrics and len(numeric_cols_for_teams) > 0:
+    #                 default_team_metrics = [numeric_cols_for_teams[0]]
+    #                 
+    #             selected_team_metrics = st.multiselect(
+    #                 "Select metrics to compare",
+    #                 options=[col for col in team_stats.columns if col not in [team_col, 'Players']],
+    #                 default=default_team_metrics[:1] if default_team_metrics else [],
+    #                 max_selections=3
+    #             )
+    #             
+    #             # Select teams to compare
+    #             all_teams = sorted(team_stats[team_col].unique())
+    #             selected_teams = st.multiselect(
+    #                 "Select teams to compare",
+    #                 options=all_teams,
+    #                 default=all_teams[:min(5, len(all_teams))],
+    #                 max_selections=10
+    #             )
+    #             
+    #             # Visualization type
+    #             team_chart_type = st.radio(
+    #                 "Chart type",
+    #                 options=["Bar Chart", "Radar Chart"],
+    #                 horizontal=True
+    #             )
+    #             
+    #             # Create visualization
+    #             if selected_team_metrics and selected_teams:
+    #                 # Filter data
+    #                 vis_data = team_stats[team_stats[team_col].isin(selected_teams)]
+    #                 
+    #                 if team_chart_type == "Bar Chart":
+    #                     # Create grouped bar chart
+    #                     team_compare_data = pd.melt(
+    #                         vis_data,
+    #                         id_vars=team_col,
+    #                         value_vars=selected_team_metrics,
+    #                         var_name='Metric',
+    #                         value_name='Value'
+    #                     )
+    #                     
+    #                     fig = px.bar(
+    #                         team_compare_data,
+    #                         x=team_col,
+    #                         y='Value',
+    #                         color='Metric',
+    #                         barmode='group',
+    #                         title=f"Team Comparison - {selected_season}",
+    #                         color_discrete_sequence=qualitative_palette,
+    #                         height=500
+    #                     )
+    #                     
+    #                     # Update layout
+    #                     fig.update_layout(
+    #                         xaxis_title="Team",
+    #                         yaxis_title="Value",
+    #                         legend_title="Metric",
+    #                         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5)
+    #                     )
+    #                     
+    #                     st.plotly_chart(fig, use_container_width=True)
+    #                     
+    #                 else:  # Radar Chart
+    #                     # Create a normalized version of the data for radar
+    #                     radar_data = vis_data.copy()
+    #                     
+    #                     # Normalize each metric between 0 and 1
+    #                     for metric in selected_team_metrics:
+    #                         max_val = radar_data[metric].max()
+    #                         min_val = radar_data[metric].min()
+    #                         if max_val != min_val:
+    #                             radar_data[f"{metric}_norm"] = (radar_data[metric] - min_val) / (max_val - min_val)
+    #                         else:
+    #                             radar_data[f"{metric}_norm"] = 1
+    #                     
+    #                     # Create radar chart
+    #                     fig = go.Figure()
+    #                     
+    #                     for i, team in enumerate(selected_teams):
+    #                         team_row = radar_data[radar_data[team_col] == team]
+    #                         
+    #                         if not team_row.empty:
+    #                             # Extract normalized values
+    #                             values = [team_row[f"{metric}_norm"].iloc[0] for metric in selected_team_metrics]
+    #                             # Repeat first value to close the polygon
+    #                             values.append(values[0])
+    #                             
+    #                             # Labels, also repeating first to close the loop
+    #                             theta = selected_team_metrics + [selected_team_metrics[0]]
+    #                             
+    #                             # Add trace
+    #                             fig.add_trace(go.Scatterpolar(
+    #                                 r=values,
+    #                                 theta=theta,
+    #                                 fill='toself',
+    #                                 name=team,
+    #                                 line_color=qualitative_palette[i % len(qualitative_palette)]
+    #                             ))
+    #                     
+    #                     # Update layout
+    #                     fig.update_layout(
+    #                         polar=dict(
+    #                             radialaxis=dict(
+    #                                 visible=True,
+    #                                 range=[0, 1]
+    #                             )
+    #                         ),
+    #                         title=f"Team Comparison - {selected_season}",
+    #                         showlegend=True,
+    #                         height=600
+    #                     )
+    #                     
+    #                     st.plotly_chart(fig, use_container_width=True)
+    #                     
+    #                     # Display actual values in a table
+    #                     with st.expander("View Raw Team Values"):
+    #                         st.dataframe(
+    #                             vis_data[[team_col] + selected_team_metrics],
+    #                             use_container_width=True
+    #                         )
+    #                 # else:
+    #                 #    st.info("Please select metrics and teams to compare")
+    #             else:
+    #                 st.info("Please select metrics and teams to compare")
+    #         else:
+    #             st.info(f"Not enough teams with {min_players}+ players in the selected season")
 
 
 def is_string_column(column):
